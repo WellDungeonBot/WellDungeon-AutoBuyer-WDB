@@ -19,7 +19,7 @@ Auto Buyer & Poster for VK Chat
 Авторизация:
  - Скрипт использует longpoll от vk_api для получения входящих сообщений из чата.
 
-GitHub: https://github.com/YourUserName/YourRepoName
+GitHub: https://github.com/WellDungeonBot/WellDungeon-AutoBuyer-WDB
 Лицензия: MIT
 """
 

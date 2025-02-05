@@ -352,6 +352,7 @@ def price_list_parser():
             lines = f.readlines()
     except Exception:
         open(PRICE_LIST_PATH, 'w').close()
+        return price_list
     print(f"[INFO] Ваш прайс-лист:")
     for line in lines:
         line = line.strip()

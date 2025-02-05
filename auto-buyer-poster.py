@@ -63,6 +63,7 @@ price_list = {}                # Словарь {предмет: цена}
 FIRST_NAME = ""
 LAST_NAME = ""
 ACCOUNT_ID = 0
+pause_flag = False
 
 # ========== ПАЛИТРА ДЛЯ ЛОГОВ (colorama) ==========
 ly = Fore.LIGHTYELLOW_EX
@@ -119,15 +120,18 @@ def change_status():
     Если золота >= GOLD_LIMIT и скупка выключена -> включает скупку.
     Если золота < GOLD_LIMIT и скупка включена -> выключает скупку.
     """
-    driver.get(PROFILE_LINK)
-    gold_str = driver.find_element(By.ID, "r_13322").find_element(By.TAG_NAME, "span").text.strip()
-    gold = int(gold_str)
-    print(f"[INFO] My gold: {gold}")
+    try:
+        driver.get(PROFILE_LINK)
+        gold_str = driver.find_element(By.ID, "r_13322").find_element(By.TAG_NAME, "span").text.strip()
+        gold = int(gold_str)
+        print(f"[INFO] My gold: {gold}")
 
-    if gold >= GOLD_LIMIT and not skup_flag:
-        skup_on()
-    elif gold < GOLD_LIMIT and skup_flag:
-        skup_off()
+        if gold >= GOLD_LIMIT and not skup_flag:
+            skup_on()
+        elif gold < GOLD_LIMIT and skup_flag:
+            skup_off()
+    except Exception:
+        print(traceback.format_exc())
 
 
 # ============================================================================
@@ -343,8 +347,11 @@ def price_list_parser():
     """
     global price_list
     price_list = {}
-    with open(PRICE_LIST_PATH, 'r', encoding="utf8") as f:
-        lines = f.readlines()
+    try:
+        with open(PRICE_LIST_PATH, 'r', encoding="utf8") as f:
+            lines = f.readlines()
+    except Exception:
+        open(PRICE_LIST_PATH, 'w').close()
     print(f"[INFO] Ваш прайс-лист:")
     for line in lines:
         line = line.strip()
@@ -395,11 +402,12 @@ def await_event(vk_session, lp):
     Обрабатывает входящие сообщения, переключает статус скупки,
     делает автопост при необходимости, добавляет/удаляет/изменяет предметы в прайс-листе.
     """
+    global pause_flag
     for event in lp.listen():
         if event.type == VkEventType.MESSAGE_NEW:
             if event.peer_id == CHAT_ID:
                 event_time = datetime.now()
-                if (event_time - load_last_post_time()) > timedelta(minutes=30):
+                if (event_time - load_last_post_time()) > timedelta(minutes=180) and not pause_flag:
                     change_status()
                     save_last_post_time(event_time)
                     send_autopost(vk_session)
@@ -438,6 +446,16 @@ def await_event(vk_session, lp):
                     send_answer(vk_session, event, now_autopost_text())
                 elif "/скуп" == command_text:
                     send_answer(vk_session, event, f"Текущий текст автопоста:\n{now_autopost_text()}")
+                elif "скуп, пауза" in command_text:
+                    if pause_flag: send_answer(vk_session, event,"Автопост уже в состоянии паузы!")
+                    else:
+                        pause_flag = True
+                        send_answer(vk_session, event,"Автопост установлен на паузу!")
+                elif "скуп, пуск" in command_text:
+                    if not pause_flag: send_answer(vk_session, event,"Автопост уже запущен!")
+                    else:
+                        pause_flag = False
+                        send_answer(vk_session, event,"Автопост запущен!!")
                 elif "скуп, заткнись" in command_text:
                     print(f"\n{lr}[INFO] Отключение бота по команде пользователя!{d}")
                     send_answer(vk_session, event, "Выключаюсь!")

@@ -24,6 +24,7 @@ GitHub: https://github.com/WellDungeonBot/WellDungeon-AutoBuyer-WDB
 """
 
 import json
+import os
 import re
 import sys
 import time
@@ -39,8 +40,9 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 
 # ========== ПУТИ К ФАЙЛАМ ==========
-DATETIME_PATH = './last-datetime.txt'  # Хранение времени последнего поста
-PRICE_LIST_PATH = './price-list.txt'   # Хранение прайс-листа
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATETIME_PATH = os.path.join(BASE_DIR, 'last-datetime.txt')
+PRICE_LIST_JSON = os.path.join(BASE_DIR, 'price_list.json')
 
 # ========== НАСТРОЙКИ ПРОФИЛЯ И ЧАТА ==========
 PROFILE_LINK = 'LINK_1'       # Ссылка на страницу персонажа (VIP3)
@@ -126,24 +128,19 @@ def change_status():
         gold = int(gold_str)
         print(f"[INFO] My gold: {gold}")
 
-        if gold >= GOLD_LIMIT and not skup_flag:
-            skup_on()
-        elif gold < GOLD_LIMIT and skup_flag:
-            skup_off()
+        if gold >= GOLD_LIMIT and not skup_flag: skup_on()
+        elif gold < GOLD_LIMIT and skup_flag: skup_off()
     except Exception:
         print(traceback.format_exc())
 
-
 # ============================================================================
-#                 КЛАСС ДЛЯ РАСШИРЕННОЙ РАБОТЫ С LONGPOLL
+#             КЛАСС ДЛЯ РАСШИРЕННОЙ РАБОТЫ С LONGPOLL
 # ============================================================================
 
 class MyVkLongPoll(VkLongPoll):
     """
-    Переопределение стандартного VkLongPoll с исправлением множества ошибок
-    (например, возврат полного набора событий при check()).
+    Переопределение стандартного VkLongPoll с исправлением множества ошибок.
     """
-
     def update_longpoll_server(self, update_ts=True):
         values = {'lp_version': '3', 'need_pts': self.pts}
         if self.group_id:
@@ -195,35 +192,98 @@ class MyVkLongPoll(VkLongPoll):
     def listen(self):
         while True:
             try:
-                while True:
-                    yield from self.check()
+                while True: yield from self.check()
             except Exception as e:
                 print(f"[ERROR] В longpoll произошла ошибка типа {type(e).__name__}:")
                 print(traceback.format_exc())
                 print(f"[ERROR] Время ошибки: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-
 # ============================================================================
-#                        ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ
+#         ФУНКЦИИ ДЛЯ РАБОТЫ С JSON ПРАЙС-ЛИСТОМ
 # ============================================================================
 
-def process():
+def load_price_list():
     """
-    Основной цикл «прослушки» событий. При ошибках пробует продолжать.
+    Загружает прайс-лист из файла JSON и обновляет глобальный словарь price_list.
+    Если файл не существует или повреждён, возвращает пустой словарь.
     """
-    while True:
-        try:
-            await_event(vk, longpoll)
-        except Exception as err:
-            err_str = str(err).replace('\n', '\n\t')
-            print(f"{lr}[ERROR] Произошла ошибка ({datetime.now().strftime('%H:%M:%S')}):{d}\n\t{err_str}")
-            print(traceback.format_exc())
-            time.sleep(1)
-            continue
+    global price_list
+    try:
+        with open(PRICE_LIST_JSON, 'r', encoding='utf-8') as f:
+            price_list = json.load(f)
+            price_list = {key.lower(): value for key, value in price_list.items()}
+    except (FileNotFoundError, json.JSONDecodeError): price_list = {}
+    print(f"[INFO] Ваш прайс-лист: {price_list}")
+    return price_list
 
+def save_price_list():
+    """
+    Сохраняет глобальный словарь price_list в файл JSON.
+    """
+    with open(PRICE_LIST_JSON, 'w', encoding='utf-8') as f:
+        json.dump(price_list, f, ensure_ascii=False, indent=4)
 
 # ============================================================================
-#                  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ VK/ЛОКАЛЬНЫЕ
+#                           РАБОТА С ДАТАМИ
+# ============================================================================
+
+def save_last_post_time(post_time: datetime):
+    """
+    Сохраняет дату/время последнего автопоста в файл DATETIME_PATH в ISO-формате.
+    """
+    with open(DATETIME_PATH, 'w', encoding='utf-8') as f:
+        f.write(post_time.isoformat())
+
+def load_last_post_time() -> datetime:
+    """
+    Считывает дату/время последнего автопоста из DATETIME_PATH, возвращает datetime.
+    """
+    try:
+        with open(DATETIME_PATH, 'r', encoding='utf-8') as f: dt_str = f.read().strip()
+        return datetime.fromisoformat(dt_str)
+    except (FileNotFoundError, ValueError):
+        print(f"{lr}[ERROR] Ошибка чтения времени последнего автопоста{d}")
+        current_time = datetime.now()
+        save_last_post_time(current_time)
+        return current_time
+
+# ============================================================================
+#                 ФУНКЦИЯ ФОРМИРОВАНИЯ АВТОПОСТА
+# ============================================================================
+
+def get_emoji(item_name):
+    """
+    Возвращает emoji для предмета, если оно есть в словаре emoji.
+    """
+    return emoji.get(item_name.lower(), "")
+
+def now_autopost_text():
+    """
+    Формирует текущий текст автопоста на основе актуального прайс-листа.
+    """
+    load_price_list()  # Обновляем данные из файла
+    result = AUTOPOST_TEXT
+    categories = ["📕", "📘", ""]
+    for cat in categories:
+        for item, cost in price_list.items():
+            if get_emoji(item) == cat:
+                item_text = item.capitalize()
+                result += f"\n{cat}{item_text} - {cost}🌕"
+    if additional_text: result += f"\n{additional_text}"
+    return result
+
+def send_autopost(vk_session):
+    """
+    Отправляет сформированный текст автопоста в нужный чат (CHAT_ID).
+    """
+    vk_session.method('messages.send', {
+        'random_id': 0,
+        'peer_id': CHAT_ID,
+        'message': now_autopost_text(),
+    })
+
+# ============================================================================
+#                  ФУНКЦИИ ДЛЯ ОБРАБОТКИ СООБЩЕНИЙ
 # ============================================================================
 
 def authorize(vk_session):
@@ -237,11 +297,9 @@ def authorize(vk_session):
     print(f"[INFO] Аккаунт {lm}{first_name} {last_name} ({account_id}){lg} успешно авторизован!{d}")
     return first_name, last_name, account_id
 
-
 def get_last_mid_from_uid(vk_session, uid):
     """
-    Возвращает ID последнего сообщения пользователя с указанным user_id (uid) из нужного чата CHAT_ID.
-    Нужно, чтобы «реплаить» именно на его сообщение.
+    Возвращает ID последнего сообщения пользователя с указанным user_id (uid) из чата CHAT_ID.
     """
     history = vk_session.method('messages.getHistory', {
         'count': 200,
@@ -255,10 +313,9 @@ def get_last_mid_from_uid(vk_session, uid):
                         return msg_2.get("id")
     return None
 
-
 def send_money(vk_session, uid, cost):
     """
-    Отправляет "Передать XXX золота" в чат, реплаем на последнее сообщение пользователя uid.
+    Отправляет сообщение "Передать XXX золота" в чат, реплаем на последнее сообщение пользователя uid.
     """
     msg = f"Передать {cost} золота"
     vk_session.method('messages.send', {
@@ -268,7 +325,6 @@ def send_money(vk_session, uid, cost):
         'random_id': 0
     })
     print(f"{lg}[INFO] Отправлены деньги ({datetime.now().strftime('%H:%M:%S')}): \n\t{g}{msg}{d}\n")
-
 
 def message_processor(vk_session, event, account_id, first_name):
     """
@@ -288,45 +344,10 @@ def message_processor(vk_session, event, account_id, first_name):
                 quantity = 1
                 prefix = msg[item_index - 3:item_index]
                 match_digits = re.search(r'(\d+)\*', prefix)
-                if match_digits: quantity = int(match_digits.group(1))
+                if match_digits:
+                    quantity = int(match_digits.group(1))
                 total_cost = str(quantity * cost)
                 send_money(vk_session, uid, total_cost)
-
-
-def get_emoji(item_name):
-    """
-    Возвращает emoji для предмета, если оно есть в словаре emoji.
-    """
-    return emoji.get(item_name.lower(), "")
-
-
-def now_autopost_text():
-    """
-    Формирует текущий текст автопоста.
-    """
-    global AUTOPOST_TEXT
-    result = AUTOPOST_TEXT
-    categories = ["📕", "📘", ""]
-    for cat in categories:
-        for item, cost in price_list.items():
-            if get_emoji(item) == cat:
-                item_text = item[0].upper() + item[1:]
-                result += f"\n{cat}{item_text} - {cost}🌕"
-    if additional_text:
-        result += f"\n{additional_text}"
-    return result
-
-
-def send_autopost(vk_session):
-    """
-    Отправляет сформированный текст автопоста в нужный чат (CHAT_ID).
-    """
-    vk_session.method('messages.send', {
-        'random_id': 0,
-        'peer_id': CHAT_ID,
-        'message': now_autopost_text(),
-    })
-
 
 def send_answer(vk_session, event, answer):
     """
@@ -339,63 +360,8 @@ def send_answer(vk_session, event, answer):
         'reply_to': event.message_id
     })
 
-
-def price_list_parser():
-    """
-    Читает файл с прайс-листом (PRICE_LIST_PATH) и заполняет глобальный словарь price_list.
-    Формат каждой строки: "название_предмета: цена"
-    """
-    global price_list
-    price_list = {}
-    try:
-        with open(PRICE_LIST_PATH, 'r', encoding="utf8") as f:
-            lines = f.readlines()
-    except Exception:
-        open(PRICE_LIST_PATH, 'w').close()
-        return price_list
-    print(f"[INFO] Ваш прайс-лист:")
-    for line in lines:
-        line = line.strip()
-        if not line or ':' not in line:
-            continue
-        name, cost_str = line.split(':')
-        name = name.strip().lower()
-        cost = int(cost_str.strip())
-        price_list[name] = cost
-
-    print(price_list)
-    return price_list
-
-
 # ============================================================================
-#                            РАБОТА С ДАТАМИ
-# ============================================================================
-
-def save_last_post_time(post_time: datetime):
-    """
-    Сохраняет дату/время последнего автопоста в файл DATETIME_PATH в ISO-формате.
-    """
-    with open(DATETIME_PATH, 'w', encoding='utf-8') as f:
-        f.write(post_time.isoformat())
-
-
-def load_last_post_time() -> datetime:
-    """
-    Считывает дату/время последнего автопоста из DATETIME_PATH, возвращает datetime.
-    """
-    try:
-        with open(DATETIME_PATH, 'r', encoding='utf-8') as f:
-            dt_str = f.read().strip()
-        return datetime.fromisoformat(dt_str)
-    except (FileNotFoundError, ValueError):
-        print(f"{lr}[ERROR] Ошибка чтения времени последнего автопоста{d}")
-        current_time = datetime.now()
-        save_last_post_time(current_time)
-        return current_time
-
-
-# ============================================================================
-#                 ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ СООБЩЕНИЙ ИВЕНТА
+#         ФУНКЦИЯ ОБРАБОТКИ СООБЩЕНИЙ ИВЕНТА LONGPOLL
 # ============================================================================
 
 def await_event(vk_session, lp):
@@ -403,7 +369,7 @@ def await_event(vk_session, lp):
     Обрабатывает входящие сообщения, переключает статус скупки,
     делает автопост при необходимости, добавляет/удаляет/изменяет предметы в прайс-листе.
     """
-    global pause_flag
+    global pause_flag, additional_text, AUTOPOST_TEXT
     for event in lp.listen():
         if event.type == VkEventType.MESSAGE_NEW:
             if event.peer_id == CHAT_ID:
@@ -417,50 +383,64 @@ def await_event(vk_session, lp):
                    and event.user_id == -183040898:
                     message_processor(vk_session, event, ACCOUNT_ID, FIRST_NAME)
             elif event.peer_id == SERVICE_CHAT_ID and event.from_me:
-                command_text = event.text.lower()
+                command_text = event.text.lower().strip()
                 if "/скуп+" in command_text:
-                    item_str = event.text[7:].strip()
+                    item_str = re.sub(r'/скуп\+', '', command_text, flags=re.IGNORECASE).strip()
                     if re.match(r'^[А-Яа-яёЁ\s]+:\s*\d+$', item_str):
-                        with open(PRICE_LIST_PATH, "a", encoding="utf8") as f:
-                            f.write(item_str.lower() + '\n')
-                        price_list_parser()
-                        send_answer(vk_session, event, now_autopost_text())
+                        try:
+                            name, cost_str = item_str.split(':', 1)
+                            name = name.strip().lower()
+                            cost = int(cost_str.strip())
+                            load_price_list()  # Обновляем текущий список
+                            price_list[name] = cost
+                            save_price_list()
+                            send_answer(vk_session, event, now_autopost_text())
+                        except Exception as e: send_answer(vk_session, event, f"Ошибка при добавлении: {e}")
                     else: send_answer(vk_session, event, "Ошибка: введённый предмет не соответствует шаблону.")
                 elif "/скуп-" in command_text:
-                    item_str = event.text[7:].strip().lower()
+                    item_str = re.sub(r'/скуп-', '', command_text, flags=re.IGNORECASE).strip()
+                    load_price_list()  # Обновляем текущий список
                     if item_str in price_list:
-                        with open(PRICE_LIST_PATH, "r+", encoding="utf8") as f:
-                            lines = f.readlines()
-                            f.seek(0)
-                            f.truncate()
-                            for line in lines:
-                                if item_str not in line.lower():
-                                    f.write(line)
-                        price_list_parser()
+                        del price_list[item_str]
+                        save_price_list()
                         send_answer(vk_session, event, now_autopost_text())
                     else:
-                        send_answer(vk_session, event,
-                                    "Ошибка: предмет не соответствует шаблону или отсутствует в прайс-листе.")
+                        send_answer(vk_session, event, "Ошибка: предмет не соответствует шаблону или отсутствует в прайс-листе.")
                 elif "/скуп=" in command_text:
-                    global additional_text
-                    additional_text = event.text[7:].strip()
+                    additional_text = re.sub(r'/скуп=', '', event.text.strip(), flags=re.IGNORECASE).strip()
                     send_answer(vk_session, event, now_autopost_text())
                 elif "/скуп" == command_text:
                     send_answer(vk_session, event, f"Текущий текст автопоста:\n{now_autopost_text()}")
+                elif "/скуптекст" in command_text:
+                    AUTOPOST_TEXT = re.sub(r'/скуптекст', '', event.text.strip(), flags=re.IGNORECASE).strip()
+                    send_answer(vk_session, event, now_autopost_text())
                 elif "скуп, пауза" in command_text:
-                    if pause_flag: send_answer(vk_session, event,"Автопост уже в состоянии паузы!")
+                    if pause_flag: send_answer(vk_session, event, "Автопост уже в состоянии паузы!")
                     else:
                         pause_flag = True
-                        send_answer(vk_session, event,"Автопост установлен на паузу!")
+                        send_answer(vk_session, event, "Автопост установлен на паузу!")
                 elif "скуп, пуск" in command_text:
-                    if not pause_flag: send_answer(vk_session, event,"Автопост уже запущен!")
+                    if not pause_flag: send_answer(vk_session, event, "Автопост уже запущен!")
                     else:
                         pause_flag = False
-                        send_answer(vk_session, event,"Автопост запущен!!")
-                elif "скуп, заткнись" in command_text:
+                        send_answer(vk_session, event, "Автопост запущен!!")
+                elif "скуп, выключись" in command_text:
                     print(f"\n{lr}[INFO] Отключение бота по команде пользователя!{d}")
                     send_answer(vk_session, event, "Выключаюсь!")
                     sys.exit()
+
+def process():
+    """
+    Основной цикл «прослушки» событий.
+    """
+    while True:
+        try: await_event(vk, longpoll)
+        except Exception as err:
+            err_str = str(err).replace('\n', '\n\t')
+            print(f"{lr}[ERROR] Произошла ошибка ({datetime.now().strftime('%H:%M:%S')}):\n\t{err_str}")
+            print(traceback.format_exc())
+            time.sleep(1)
+            continue
 
 
 # ============================================================================
@@ -483,8 +463,7 @@ if __name__ == '__main__':
 
     print(f"[INFO] Последняя дата поста (из файла): {load_last_post_time()}")
 
-    try:
-        price_list_parser()
+    try: load_price_list()
     except Exception as e:
         print(f"{lr}[ERROR] Ошибка чтения прайс-листа:\n\t{e}{d}")
         sys.exit(1)
